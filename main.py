@@ -2,6 +2,14 @@ import yfinance as yf
 import json
 import os
 import requests
+from flask import Flask
+
+# Dummy web server so Render keeps the service alive
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "GoldBot is running."
 
 # IMPORTANT: Replace this with your NEW regenerated token
 BOT_TOKEN = "REPLACE_ME"
@@ -49,35 +57,37 @@ print("Last saved price:", last_price)
 if last_price is None:
     print("First run — saving price.")
     save_last_price(current_price)
-    exit()
-
-# Calculate difference
-price_difference = current_price - last_price
-print("Price difference:", price_difference)
-
-# Trigger when gold moves £50 or more
-if abs(price_difference) >= 50:
-
-    if price_difference > 0:
-        alert_text = (
-            f"📈 SELL Signal\n\n"
-            f"Gold has risen by £{price_difference:.2f}\n"
-            f"Old price: £{last_price:.2f}\n"
-            f"New price: £{current_price:.2f}"
-        )
-    else:
-        alert_text = (
-            f"📉 BUY Signal\n\n"
-            f"Gold has dropped by £{abs(price_difference):.2f}\n"
-            f"Old price: £{last_price:.2f}\n"
-            f"New price: £{current_price:.2f}"
-        )
-
-    print(alert_text)
-    send_message(alert_text)
-
 else:
-    print("No alert — gold movement less than £50.")
+    price_difference = current_price - last_price
+    print("Price difference:", price_difference)
+
+    # Trigger when gold moves £50 or more
+    if abs(price_difference) >= 50:
+
+        if price_difference > 0:
+            alert_text = (
+                f"📈 SELL Signal\n\n"
+                f"Gold has risen by £{price_difference:.2f}\n"
+                f"Old price: £{last_price:.2f}\n"
+                f"New price: £{current_price:.2f}"
+            )
+        else:
+            alert_text = (
+                f"📉 BUY Signal\n\n"
+                f"Gold has dropped by £{abs(price_difference):.2f}\n"
+                f"Old price: £{last_price:.2f}\n"
+                f"New price: £{current_price:.2f}"
+            )
+
+        print(alert_text)
+        send_message(alert_text)
+
+    else:
+        print("No alert — gold movement less than £50.")
 
 # Always save the new price at the end
 save_last_price(current_price)
+
+# Start the dummy web server
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
