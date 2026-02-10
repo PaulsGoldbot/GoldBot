@@ -1,93 +1,88 @@
-import yfinance as yf
-import json
 import os
-import requests
-from flask import Flask
+import json
+import yfinance as yf
+import asyncio
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# Dummy web server so Render keeps the service alive
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "GoldBot is running."
-
-# IMPORTANT: Replace this with your NEW regenerated token
-BOT_TOKEN = "REPLACE_ME"
-CHAT_ID = 8569426510
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = int(os.getenv("CHAT_ID"))
 
 TICKER = "SGLN.L"
+ALERT_MOVE = 50  # £50 movement alert
+
 
 def get_price():
     data = yf.Ticker(TICKER)
-    hist = data.history(period="1d")
-    if hist.empty:
-        return None
-    return float(hist["Close"].iloc[-1])
+    price = data.history(period="1d")["Close"].iloc[-1]
+    return float(price)
+
 
 def load_last_price():
     if not os.path.exists("state.json"):
         return None
-    try:
-        with open("state.json", "r") as f:
-            data = json.load(f)
-            return data.get("last_price")
-    except:
-        return None
+    with open("state.json", "r") as f:
+        return json.load(f).get("last_price")
+
 
 def save_last_price(price):
     with open("state.json", "w") as f:
         json.dump({"last_price": price}, f)
 
-def send_message(text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text}
-    requests.post(url, data=payload)
 
-# -----------------------------
-# MAIN LOGIC
-# -----------------------------
+async def send_alert(text, context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_message(chat_id=CHAT_ID, text=text)
 
-current_price = get_price()
-last_price = load_last_price()
 
-print("Current price:", current_price)
-print("Last saved price:", last_price)
+async def check_gold(context: ContextTypes.DEFAULT_TYPE):
+    current_price = get_price()
+    last_price = load_last_price()
 
-# FIRST RUN — no comparison
-if last_price is None:
-    print("First run — saving price.")
-    save_last_price(current_price)
-else:
-    price_difference = current_price - last_price
-    print("Price difference:", price_difference)
+    print(f"Checking gold… Current: {current_price}, Last: {last_price}")
 
-    # Trigger when gold moves £50 or more
-    if abs(price_difference) >= 50:
+    if last_price is None:
+        save_last_price(current_price)
+        print("First run — saved initial price.")
+        return
 
-        if price_difference > 0:
-            alert_text = (
+    price_diff = current_price - last_price
+
+    if abs(price_diff) >= ALERT_MOVE:
+        if price_diff > 0:
+            alert = (
                 f"📈 SELL Signal\n\n"
-                f"Gold has risen by £{price_difference:.2f}\n"
+                f"Gold has risen by £{price_diff:.2f}\n"
                 f"Old price: £{last_price:.2f}\n"
                 f"New price: £{current_price:.2f}"
             )
         else:
-            alert_text = (
+            alert = (
                 f"📉 BUY Signal\n\n"
-                f"Gold has dropped by £{abs(price_difference):.2f}\n"
+                f"Gold has dropped by £{abs(price_diff):.2f}\n"
                 f"Old price: £{last_price:.2f}\n"
                 f"New price: £{current_price:.2f}"
             )
 
-        print(alert_text)
-        send_message(alert_text)
+        await send_alert(alert, context)
 
-    else:
-        print("No alert — gold movement less than £50.")
+    save_last_price(current_price)
 
-# Always save the new price at the end
-save_last_price(current_price)
 
-# Start the dummy web server
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Bot is running and checking gold every 5 minutes.")
+
+
+async def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+
+    # Run gold check every 5 minutes
+    app.job_queue.run_repeating(check_gold, interval=300, first=5)
+
+    print("Bot started — polling Telegram…")
+    await app.run_polling()
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    asyncio.run(main())
