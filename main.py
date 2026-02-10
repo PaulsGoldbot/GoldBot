@@ -3,24 +3,28 @@ import json
 import os
 import requests
 
-BOT_TOKEN = "8304590973:AAG06qnKh1By6Plsnzlfgj3PWMoRtmXUlNI"
+# IMPORTANT: Replace this with your NEW regenerated token
+BOT_TOKEN = "REPLACE_ME"
 CHAT_ID = 8569426510
 
-
 TICKER = "SGLN.L"
-THRESHOLD_PERCENT = 0  # alert when price moves 5%
 
 def get_price():
     data = yf.Ticker(TICKER)
-    price = data.history(period="1d")["Close"].iloc[-1]
-    return float(price)
+    hist = data.history(period="1d")
+    if hist.empty:
+        return None
+    return float(hist["Close"].iloc[-1])
 
 def load_last_price():
     if not os.path.exists("state.json"):
         return None
-    with open("state.json", "r") as f:
-        data = json.load(f)
-        return data.get("last_price")
+    try:
+        with open("state.json", "r") as f:
+            data = json.load(f)
+            return data.get("last_price")
+    except:
+        return None
 
 def save_last_price(price):
     with open("state.json", "w") as f:
@@ -31,6 +35,9 @@ def send_message(text):
     payload = {"chat_id": CHAT_ID, "text": text}
     requests.post(url, data=payload)
 
+# -----------------------------
+# MAIN LOGIC
+# -----------------------------
 
 current_price = get_price()
 last_price = load_last_price()
@@ -38,25 +45,20 @@ last_price = load_last_price()
 print("Current price:", current_price)
 print("Last saved price:", last_price)
 
+# FIRST RUN — no comparison
 if last_price is None:
     print("First run — saving price.")
     save_last_price(current_price)
-else:
-    change = current_price - last_price
-    percent_change = (change / last_price) * 100
+    exit()
 
-    print("Price difference:", change)
-    print("Percent change:", percent_change)
-
+# Calculate difference
 price_difference = current_price - last_price
-
-price_difference = current_price - last_price
+print("Price difference:", price_difference)
 
 # Trigger when gold moves £50 or more
 if abs(price_difference) >= 50:
 
     if price_difference > 0:
-        # Price has risen £50 or more → SELL signal
         alert_text = (
             f"📈 SELL Signal\n\n"
             f"Gold has risen by £{price_difference:.2f}\n"
@@ -64,7 +66,6 @@ if abs(price_difference) >= 50:
             f"New price: £{current_price:.2f}"
         )
     else:
-        # Price has dropped £50 or more → BUY signal
         alert_text = (
             f"📉 BUY Signal\n\n"
             f"Gold has dropped by £{abs(price_difference):.2f}\n"
@@ -74,9 +75,9 @@ if abs(price_difference) >= 50:
 
     print(alert_text)
     send_message(alert_text)
-    save_last_price(current_price)
 
 else:
     print("No alert — gold movement less than £50.")
 
-
+# Always save the new price at the end
+save_last_price(current_price)
