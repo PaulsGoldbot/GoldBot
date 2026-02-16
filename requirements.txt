@@ -1,3 +1,5 @@
 python-telegram-bot[job-queue]
 yfinance
 requests
+pandas
+beautifulsoup4
