@@ -5,8 +5,6 @@ import asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = int(os.getenv("CHAT_ID"))
 
 TICKER = "SGLN.L"
 ALERT_MOVE = 50  # £50 movement alert
@@ -30,8 +28,8 @@ def save_last_price(price):
         json.dump({"last_price": price}, f)
 
 
-async def send_alert(text, context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_message(chat_id=CHAT_ID, text=text)
+async def send_alert(text, context: ContextTypes.DEFAULT_TYPE, chat_id):
+    await context.bot.send_message(chat_id=chat_id, text=text)
 
 
 async def check_gold(context: ContextTypes.DEFAULT_TYPE):
@@ -63,7 +61,8 @@ async def check_gold(context: ContextTypes.DEFAULT_TYPE):
                 f"New price: £{current_price:.2f}"
             )
 
-        await send_alert(alert, context)
+        chat_id = int(os.getenv("CHAT_ID"))
+        await send_alert(alert, context, chat_id)
 
     save_last_price(current_price)
 
@@ -73,6 +72,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def main():
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    CHAT_ID = int(os.getenv("CHAT_ID"))
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
