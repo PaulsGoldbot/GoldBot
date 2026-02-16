@@ -1,9 +1,12 @@
 import os
 import json
 import yfinance as yf
-import asyncio
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+)
 
 
 TICKER = "SGLN.L"
@@ -71,20 +74,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bot is running and checking gold every 5 minutes.")
 
 
-async def main():
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    CHAT_ID = int(os.getenv("CHAT_ID"))
-
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-
-    # Run gold check every 5 minutes
-    app.job_queue.run_repeating(check_gold, interval=300, first=5)
-
-    print("Bot started — polling Telegram…")
-    await app.run_polling()
-
-
+# ⭐ NO ASYNCIO.RUN — PTB handles the loop itself
 if __name__ == "__main__":
-    asyncio.run(main())
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+
