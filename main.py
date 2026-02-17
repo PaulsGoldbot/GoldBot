@@ -41,9 +41,163 @@ def load_state():
         return json.load(f)
 
 
-def save_state
+def save_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
+
+
+# -----------------------------
+# ALERT SENDER
+# -----------------------------
+async def send_alert(text, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = int(os.getenv("CHAT_ID"))
+    await context.bot.send_message(chat_id=chat_id, text=text)
+
+
+# -----------------------------
+# CORE TREND LOGIC
+# -----------------------------
+async def check_gold(context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    current_price = get_price()
+    last_price = state["last_price"]
+
+    print(f"Checking gold… Current: {current_price}, Last: {last_price}")
+
+    # First run
+    if last_price is None:
+        state["last_price"] = current_price
+        state["last_low"] = current_price
+        state["last_high"] = current_price
+        save_state(state)
+        print("First run — saved initial price, high, and low.")
+        return
+
+    last_low = state["last_low"]
+    last_high = state["last_high"]
+    trend = state["trend"]
+    position = state["position"]
+
+    # Update lows/highs
+    if current_price < last_low:
+        last_low = current_price
+    if current_price > last_high:
+        last_high = current_price
+
+    # Calculate percentage moves
+    move_from_low = (current_price - last_low) / last_low if last_low > 0 else None
+    move_from_high = (current_price - last_high) / last_high if last_high > 0 else None
+
+    # -----------------------------
+    # BUY SIGNAL (2% UP FROM LOW)
+    # -----------------------------
+    if move_from_low is not None and move_from_low >= PERCENT_THRESHOLD:
+        trend = "UP"
+        position = "IN"
+
+        msg = (
+            "BUY signal triggered. Your rule says buy now.\n"
+            f"Gold has risen 2% from the last low.\n"
+            f"Last low: £{last_low:.2f}\n"
+            f"Current price: £{current_price:.2f}\n"
+            "You are now marked as IN the market."
+        )
+        await send_alert(msg, context)
+
+        # Reset high reference
+        last_high = current_price
+
+    # -----------------------------
+    # SELL SIGNAL (2% DOWN FROM HIGH)
+    # -----------------------------
+    elif move_from_high is not None and move_from_high <= -PERCENT_THRESHOLD:
+        trend = "DOWN"
+        position = "OUT"
+
+        msg = (
+            "SELL signal triggered. Your rule says sell now.\n"
+            f"Gold has fallen 2% from the last high.\n"
+            f"Last high: £{last_high:.2f}\n"
+            f"Current price: £{current_price:.2f}\n"
+            "You are now marked as OUT of the market."
+        )
+        await send_alert(msg, context)
+
+        # Reset low reference
+        last_low = current_price
+
+    # Save updated state
+    state["last_price"] = current_price
+    state["last_low"] = last_low
+    state["last_high"] = last_high
+    state["trend"] = trend
+    state["position"] = position
+    save_state(state)
+
+
+# -----------------------------
+# COMMANDS
+# -----------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Bot is running.\n"
+        "I check gold every 5 minutes and use your 2% rule to trigger BUY and SELL signals."
+    )
+
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = load_state()
+    price = state["last_price"]
+    last_low = state["last_low"]
+    last_high = state["last_high"]
+    trend = state["trend"]
+    position = state["position"]
+
+    if price is None:
+        await update.message.reply_text("No price data yet. Please wait for the next check.")
+        return
+
+    if trend == "UP":
+        change = (price - last_low) / last_low * 100 if last_low else 0
+        msg = (
+            "You are currently IN the market (based on your last BUY signal).\n"
+            "Gold is trending upward.\n"
+            f"Last low: £{last_low:.2f}\n"
+            f"Current price: £{price:.2f}\n"
+            f"Change from last low: {change:.2f}%."
+        )
+    elif trend == "DOWN":
+        change = (price - last_high) / last_high * 100 if last_high else 0
+        msg = (
+            "You are currently OUT of the market (based on your last SELL signal).\n"
+            "Gold is trending downward.\n"
+            f"Last high: £{last_high:.2f}\n"
+            f"Current price: £{price:.2f}\n"
+            f"Change from last high: {change:.2f}%."
+        )
+    else:
+        msg = (
+            "Trend not established yet.\n"
+            f"Last price: £{price:.2f}\n"
+            "Waiting for a clear 2% move."
+        )
+
+    await update.message.reply_text(msg)
+
+
+# -----------------------------
+# MAIN
+# -----------------------------
+if __name__ == "__main__":
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("status", status))
+
+    # Check every 5 minutes
     app.job_queue.run_repeating(check_gold, interval=300, first=5)
 
     print("Bot started — polling Telegram…")
     app.run_polling()
-
