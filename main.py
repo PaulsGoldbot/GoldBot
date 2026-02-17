@@ -62,7 +62,7 @@ async def check_gold(context: ContextTypes.DEFAULT_TYPE):
     current_price = get_price()
     last_price = state["last_price"]
 
-    print(f"Checking gold… Current: {current_price}, Last: {last_price}")
+    print("Checking gold… Current: {}, Last: {}".format(current_price, last_price))
 
     # First run
     if last_price is None:
@@ -95,11 +95,12 @@ async def check_gold(context: ContextTypes.DEFAULT_TYPE):
 
         msg = (
             "BUY signal triggered. Your rule says buy now.\n"
-            f"Gold has risen 2% from the last low.\n"
-            f"Last low: £{last_low:.2f}\n"
-            f"Current price: £{current_price:.2f}\n"
+            "Gold has risen 2% from the last low.\n"
+            "Last low: £{:.2f}\n"
+            "Current price: £{:.2f}\n"
             "You are now marked as IN the market."
-        )
+        ).format(last_low, current_price)
+
         await send_alert(msg, context)
         last_high = current_price
 
@@ -110,5 +111,25 @@ async def check_gold(context: ContextTypes.DEFAULT_TYPE):
 
         msg = (
             "SELL signal triggered. Your rule says sell now.\n"
-            f"Gold has fallen 2% from the last high.\n"
-            f"Last high: £{
+            "Gold has fallen 2% from the last high.\n"
+            "Last high: £{:.2f}\n"
+            "Current price: £{:.2f}\n"
+            "You are now marked as OUT of the market."
+        ).format(last_high, current_price)
+
+        await send_alert(msg, context)
+        last_low = current_price
+
+    # Save updated state
+    state["last_price"] = current_price
+    state["last_low"] = last_low
+    state["last_high"] = last_high
+    state["trend"] = trend
+    state["position"] = position
+    save_state(state)
+
+
+# -----------------------------
+# COMMANDS
+# -----------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT
