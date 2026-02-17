@@ -102,34 +102,4 @@ async def check_gold(context: ContextTypes.DEFAULT_TYPE):
         ).format(last_low, current_price)
 
         await send_alert(msg, context)
-        last_high = current_price
-
-    # SELL SIGNAL
-    elif move_from_high is not None and move_from_high <= -PERCENT_THRESHOLD:
-        trend = "DOWN"
-        position = "OUT"
-
-        msg = (
-            "SELL signal triggered. Your rule says sell now.\n"
-            "Gold has fallen 2% from the last high.\n"
-            "Last high: £{:.2f}\n"
-            "Current price: £{:.2f}\n"
-            "You are now marked as OUT of the market."
-        ).format(last_high, current_price)
-
-        await send_alert(msg, context)
-        last_low = current_price
-
-    # Save updated state
-    state["last_price"] = current_price
-    state["last_low"] = last_low
-    state["last_high"] = last_high
-    state["trend"] = trend
-    state["position"] = position
-    save_state(state)
-
-
-# -----------------------------
-# COMMANDS
-# -----------------------------
-async def start(update: Update, context: ContextTypes.DEFAULT
+        last_high = current
