@@ -10,7 +10,7 @@ PERCENT_THRESHOLD = 0.02  # 2%
 COMMODITIES = {
     "SGLN.L": "Gold",
     "SSLN.L": "Silver",
-    "OILB.L": "Oil",
+   "BRNT.L": "Oil",
     "NGAS.L": "Natural Gas",
     "COPA.L": "Copper",
     "PHPT.L": "Platinum",
