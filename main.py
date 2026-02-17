@@ -8,7 +8,6 @@ from telegram.ext import (
     ContextTypes,
 )
 
-
 TICKER = "SGLN.L"
 ALERT_MOVE = 50  # £50 movement alert
 
@@ -74,8 +73,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bot is running and checking gold every 5 minutes.")
 
 
-# ⭐ NO ASYNCIO.RUN — PTB handles the loop itself
 if __name__ == "__main__":
     BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Commands
+    app.add_handler(CommandHandler("start", start))
+
+    # Scheduled job every 5 minutes
+    app.job_queue.run_repeating(check_gold, interval=300, first=5)
+
+    print("Bot started — polling Telegram…")
+    app.run_polling()
