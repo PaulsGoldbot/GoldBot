@@ -64,6 +64,7 @@ async def check_gold(context: ContextTypes.DEFAULT_TYPE):
 
     print(f"Checking gold… Current: {current_price}, Last: {last_price}")
 
+    # First run
     if last_price is None:
         state["last_price"] = current_price
         state["last_low"] = current_price
@@ -77,11 +78,13 @@ async def check_gold(context: ContextTypes.DEFAULT_TYPE):
     trend = state["trend"]
     position = state["position"]
 
+    # Update lows/highs
     if current_price < last_low:
         last_low = current_price
     if current_price > last_high:
         last_high = current_price
 
+    # Calculate percentage moves
     move_from_low = (current_price - last_low) / last_low if last_low > 0 else None
     move_from_high = (current_price - last_high) / last_high if last_high > 0 else None
 
@@ -108,46 +111,4 @@ async def check_gold(context: ContextTypes.DEFAULT_TYPE):
         msg = (
             "SELL signal triggered. Your rule says sell now.\n"
             f"Gold has fallen 2% from the last high.\n"
-            f"Last high: £{last_high:.2f}\n"
-            f"Current price: £{current_price:.2f}\n"
-            "You are now marked as OUT of the market."
-        )
-        await send_alert(msg, context)
-        last_low = current_price
-
-    state["last_price"] = current_price
-    state["last_low"] = last_low
-    state["last_high"] = last_high
-    state["trend"] = trend
-    state["position"] = position
-    save_state(state)
-
-
-# -----------------------------
-# COMMANDS
-# -----------------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Bot is running.\n"
-        "I check gold every 5 minutes and use your 2% rule to trigger BUY and SELL signals."
-    )
-
-
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state = load_state()
-    price = state["last_price"]
-    last_low = state["last_low"]
-    last_high = state["last_high"]
-    trend = state["trend"]
-
-    if price is None:
-        await update.message.reply_text("No price data yet. Please wait for the next check.")
-        return
-
-    if trend == "UP":
-        change = (price - last_low) / last_low * 100
-        msg = (
-            "You are currently IN the market.\n"
-            "Gold is trending upward.\n"
-            f"Last low: £{last_low:.2f}\n"
-            f"Current price
+            f"Last high: £{
