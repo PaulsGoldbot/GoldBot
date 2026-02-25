@@ -84,8 +84,12 @@ def get_price(ticker: str) -> float:
 
 
 def get_volatility_and_price(ticker: str):
+    """
+    Returns (current_price, daily_volatility_std) using last 10 days.
+    If volatility cannot be computed, returns (price, None).
+    """
     data = yf.Ticker(ticker)
-    hist = data.history(period="11d")
+    hist = data.history(period="11d")  # need at least 2 points for returns
     if hist.empty or len(hist["Close"]) < 2:
         price = float(hist["Close"].iloc[-1]) if not hist.empty else None
         return price, None
@@ -98,13 +102,19 @@ def get_volatility_and_price(ticker: str):
 
 
 def adapt_threshold(volatility: float | None) -> float:
+    """
+    Simple volatility-adaptive threshold:
+    - vol < VOL_LOW  -> slightly lower threshold (more sensitive)
+    - vol > VOL_HIGH -> higher threshold (more conservative)
+    - otherwise      -> base threshold
+    """
     if volatility is None:
         return BASE_THRESHOLD
 
     if volatility < VOL_LOW:
-        return max(0.01, BASE_THRESHOLD * 0.75)
+        return max(0.01, BASE_THRESHOLD * 0.75)  # e.g. 1.5% if base is 2%
     if volatility > VOL_HIGH:
-        return BASE_THRESHOLD * 1.5
+        return BASE_THRESHOLD * 1.5              # e.g. 3% if base is 2%
     return BASE_THRESHOLD
 
 
@@ -114,6 +124,7 @@ async def send_alert(text: str, context: ContextTypes.DEFAULT_TYPE, reply_markup
 
 
 def build_confirmation_keyboard(action: str, ticker: str) -> InlineKeyboardMarkup:
+    # action: "BUY" or "SELL"
     yes_data = f"CONFIRM|{action}|{ticker}|YES"
     no_data = f"CONFIRM|{action}|{ticker}|NO"
     keyboard = [
@@ -140,7 +151,7 @@ async def check_one_commodity(ticker: str, name: str, context: ContextTypes.DEFA
 
     # Test mode override
     if state.get("test_mode"):
-        threshold_pct = 0.01  # force 1%
+        threshold_pct = 0.01  # force 1% in test mode
     else:
         threshold_pct = adapt_threshold(vol)
 
@@ -153,6 +164,12 @@ async def check_one_commodity(ticker: str, name: str, context: ContextTypes.DEFA
     last_sell = state["last_sell_price"]
     pending_order = state["pending_order"]
 
+    # AUTO-INITIALIZE BASELINE IF NONE EXISTS
+    if last_buy is None and last_sell is None:
+        state["last_buy_price"] = current_price
+        last_buy = current_price
+        print(f"Initialized baseline for {name} at £{current_price:.2f}")
+
     print(
         f"Checking {name} ({ticker})… "
         f"Price: {current_price:.4f}, "
@@ -160,10 +177,12 @@ async def check_one_commodity(ticker: str, name: str, context: ContextTypes.DEFA
         f"Threshold: {threshold_pct:.4f}, Vol: {vol}"
     )
 
+    # If an order is already pending, do not trigger another
     if pending_order is not None:
         save_state(ticker, state)
         return
 
+    # Determine triggers based on last buy/sell
     buy_trigger = None
     sell_trigger = None
 
@@ -175,27 +194,33 @@ async def check_one_commodity(ticker: str, name: str, context: ContextTypes.DEFA
         sell_trigger = last_buy * (1 - threshold_pct)
         state["sell_trigger"] = sell_trigger
 
+    # BUY signal: price has risen X% above last sell
     if buy_trigger is not None and current_price >= buy_trigger:
         state["pending_order"] = "BUY"
         state["pending_price"] = current_price
 
         msg = (
             f"{name} ({ticker}) — BUY signal.\n\n"
-            f"Trigger: £{buy_trigger:.2f}\n"
-            f"Current: £{current_price:.2f}\n\n"
+            f"Rule: Wait {threshold_pct*100:.2f}% above your last SELL price.\n"
+            f"Last sell: £{last_sell:.2f}\n"
+            f"Trigger:  £{buy_trigger:.2f}\n"
+            f"Current:  £{current_price:.2f}\n\n"
             f"Did you BUY {name} now?"
         )
         keyboard = build_confirmation_keyboard("BUY", ticker)
         await send_alert(msg, context, reply_markup=keyboard)
 
+    # SELL signal: price has fallen X% below last buy
     elif sell_trigger is not None and current_price <= sell_trigger:
         state["pending_order"] = "SELL"
         state["pending_price"] = current_price
 
         msg = (
             f"{name} ({ticker}) — SELL signal.\n\n"
-            f"Trigger: £{sell_trigger:.2f}\n"
-            f"Current: £{current_price:.2f}\n\n"
+            f"Rule: Wait {threshold_pct*100:.2f}% below your last BUY price.\n"
+            f"Last buy: £{last_buy:.2f}\n"
+            f"Trigger:  £{sell_trigger:.2f}\n"
+            f"Current:  £{current_price:.2f}\n\n"
             f"Did you SELL {name} now?"
         )
         keyboard = build_confirmation_keyboard("SELL", ticker)
@@ -215,15 +240,15 @@ async def check_all(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [
         "Bot is running.",
-        "I check these commodities every 5 minutes:",
+        "I check these commodities every 5 minutes using your adaptive rule:",
     ]
     for ticker, name in COMMODITIES.items():
         lines.append(f"- {name} ({ticker})")
     lines.append("\nCommands:")
     lines.append("/status – show current state")
-    lines.append("/setholding <ticker> <amount>")
-    lines.append("/updateholding <ticker> <delta>")
-    lines.append("/test – run a 1% test cycle on Gold")
+    lines.append("/setholding <ticker> <amount> – set holding value in £")
+    lines.append("/updateholding <ticker> <delta> – adjust holding by +/− amount")
+    lines.append("/test – run a 1% test cycle on Gold (SGLN.L)")
     await update.message.reply_text("\n".join(lines))
 
 
@@ -254,7 +279,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
 
         if vol is not None:
-            msg_lines.append(f"Volatility: {vol*100:.2f}%")
+            msg_lines.append(f"Volatility (10d std): {vol*100:.2f}%")
 
         if last_buy is not None:
             msg_lines.append(f"Last BUY: £{last_buy:.2f}")
@@ -262,7 +287,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg_lines.append(f"Last SELL: £{last_sell:.2f}")
 
         if buy_trigger is not None:
-            msg_lines.append(f"BUY trigger: £{buy_trigger:.2f}")
+            msg_lines.append(f"BUY trigger:  £{buy_trigger:.2f}")
         if sell_trigger is not None:
             msg_lines.append(f"SELL trigger: £{sell_trigger:.2f}")
 
@@ -280,20 +305,28 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n\n".join(parts))
 
 
+def parse_ticker_and_amount(args):
+    if len(args) != 2:
+        return None, None
+    ticker = args[0].upper()
+    try:
+        amount = float(args[1])
+    except ValueError:
+        return ticker, None
+    return ticker, amount
+
+
 async def setholding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /setholding <ticker> <amount>")
         return
 
-    ticker = context.args[0].upper()
-    try:
-        amount = float(context.args[1])
-    except:
-        await update.message.reply_text("Amount must be a number.")
-        return
-
+    ticker, amount = parse_ticker_and_amount(context.args)
     if ticker not in COMMODITIES:
-        await update.message.reply_text("Unknown ticker.")
+        await update.message.reply_text("Unknown ticker. Use one of: " + ", ".join(COMMODITIES.keys()))
+        return
+    if amount is None:
+        await update.message.reply_text("Amount must be a number. Example: /setholding SGLN.L 400")
         return
 
     state = load_state(ticker)
@@ -301,7 +334,7 @@ async def setholding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_state(ticker, state)
 
     await update.message.reply_text(
-        f"Holding for {COMMODITIES[ticker]} set to £{amount:.2f}."
+        f"Holding for {COMMODITIES[ticker]} ({ticker}) set to £{amount:.2f}."
     )
 
 
@@ -310,15 +343,12 @@ async def updateholding(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /updateholding <ticker> <delta>")
         return
 
-    ticker = context.args[0].upper()
-    try:
-        delta = float(context.args[1])
-    except:
-        await update.message.reply_text("Delta must be a number.")
-        return
-
+    ticker, delta = parse_ticker_and_amount(context.args)
     if ticker not in COMMODITIES:
-        await update.message.reply_text("Unknown ticker.")
+        await update.message.reply_text("Unknown ticker. Use one of: " + ", ".join(COMMODITIES.keys()))
+        return
+    if delta is None:
+        await update.message.reply_text("Delta must be a number. Example: /updateholding SGLN.L +50")
         return
 
     state = load_state(ticker)
@@ -326,7 +356,7 @@ async def updateholding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_state(ticker, state)
 
     await update.message.reply_text(
-        f"Holding for {COMMODITIES[ticker]} updated by £{delta:.2f}. "
+        f"Holding for {COMMODITIES[ticker]} ({ticker}) updated by £{delta:.2f}. "
         f"New holding: £{state['holding_value']:.2f}."
     )
 
@@ -337,7 +367,7 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = load_state(ticker)
     state["original_threshold"] = state.get("threshold_pct", BASE_THRESHOLD)
-    state["threshold_pct"] = 0.01
+    state["threshold_pct"] = 0.01  # 1% for test
     state["test_mode"] = True
     save_state(ticker, state)
 
@@ -353,7 +383,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
 
-    data = query.data
+    data = query.data  # "CONFIRM|BUY|SGLN.L|YES"
     try:
         prefix, action, ticker, answer = data.split("|")
     except ValueError:
@@ -365,31 +395,45 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     if ticker not in COMMODITIES:
-        await query.edit_message_text("Unknown ticker.")
+        await query.edit_message_text("Unknown ticker in confirmation.")
         return
 
     state = load_state(ticker)
     pending_order = state.get("pending_order")
     pending_price = state.get("pending_price")
+
     name = COMMODITIES[ticker]
 
     if pending_order is None or pending_price is None:
-        await query.edit_message_text(f"{name} — no pending order found.")
+        await query.edit_message_text(
+            f"{name} ({ticker}) — no pending order found. Maybe already handled."
+        )
         return
 
     if answer == "YES":
         if action == "BUY" and pending_order == "BUY":
             state["last_buy_price"] = pending_price
-            msg = f"{name} — BUY confirmed at £{pending_price:.2f}."
+            msg = (
+                f"{name} ({ticker}) — BUY confirmed.\n"
+                f"Recorded BUY price: £{pending_price:.2f}.\n"
+                f"Use /setholding or /updateholding to adjust your £ holding."
+            )
         elif action == "SELL" and pending_order == "SELL":
             state["last_sell_price"] = pending_price
-            msg = f"{name} — SELL confirmed at £{pending_price:.2f}."
+            msg = (
+                f"{name} ({ticker}) — SELL confirmed.\n"
+                f"Recorded SELL price: £{pending_price:.2f}.\n"
+                f"Use /setholding or /updateholding if you changed your £ holding."
+            )
         else:
-            msg = f"{name} — mismatch between pending order and confirmation."
-    else:
-        msg = f"{name} — signal ignored."
+            msg = f"{name} ({ticker}) — mismatch between pending order and confirmation."
+    else:  # answer == "NO"
+        msg = (
+            f"{name} ({ticker}) — you chose NO.\n"
+            f"The signal is ignored; no BUY/SELL recorded."
+        )
 
-    # Clear pending
+    # Clear pending state regardless of YES/NO
     state["pending_order"] = None
     state["pending_price"] = None
 
@@ -401,6 +445,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         msg += f"\n\nTEST COMPLETE — threshold restored to {original*100:.2f}%."
 
     save_state(ticker, state)
+
     await query.edit_message_text(msg)
 
 
@@ -418,6 +463,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("test", test_command))
     app.add_handler(CallbackQueryHandler(handle_confirmation, pattern=r"^CONFIRM\|"))
 
+    # Check all commodities every 5 minutes
     app.job_queue.run_repeating(check_all, interval=300, first=5)
 
     print("Upgraded bot started — polling Telegram…")
