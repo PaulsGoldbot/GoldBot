@@ -53,7 +53,6 @@ def default_state() -> dict:
         "last_updated": None,
         "test_mode": False,
         "original_threshold": BASE_THRESHOLD,
-        # New flag: ignore SELL signals until price recovers above last_buy
         "ignore_sell_until_recovery": False,
     }
 
@@ -87,14 +86,8 @@ def get_price(ticker: str) -> float:
 
 
 def get_volatility_and_price(ticker: str):
-    """
-    Returns (current_price, daily_volatility_std) using last 10 days.
-    If volatility cannot be computed, returns (price, None).
-
-    Volatility is CLAMPED to VOL_MAX (e.g. 20%) to avoid insane 3000% spikes.
-    """
     data = yf.Ticker(ticker)
-    hist = data.history(period="11d")  # need at least 2 points for returns
+    hist = data.history(period="11d")
     if hist.empty or len(hist["Close"]) < 2:
         price = float(hist["Close"].iloc[-1]) if not hist.empty else None
         return price, None
@@ -105,26 +98,19 @@ def get_volatility_and_price(ticker: str):
     current_price = float(closes.iloc[-1])
 
     if vol is not None:
-        # Clamp volatility to avoid 3000% nonsense
         vol = min(vol, VOL_MAX)
 
     return current_price, vol
 
 
 def adapt_threshold(volatility: float | None) -> float:
-    """
-    Simple volatility-adaptive threshold:
-    - vol < VOL_LOW  -> slightly lower threshold (more sensitive)
-    - vol > VOL_HIGH -> higher threshold (more conservative)
-    - otherwise      -> base threshold
-    """
     if volatility is None:
         return BASE_THRESHOLD
 
     if volatility < VOL_LOW:
-        return max(0.01, BASE_THRESHOLD * 0.75)  # e.g. 1.5% if base is 2%
+        return max(0.01, BASE_THRESHOLD * 0.75)
     if volatility > VOL_HIGH:
-        return BASE_THRESHOLD * 1.5              # e.g. 3% if base is 2%
+        return BASE_THRESHOLD * 1.5
     return BASE_THRESHOLD
 
 
@@ -134,7 +120,6 @@ async def send_alert(text: str, context: ContextTypes.DEFAULT_TYPE, reply_markup
 
 
 def build_confirmation_keyboard(action: str, ticker: str) -> InlineKeyboardMarkup:
-    # action: "BUY" or "SELL"
     yes_data = f"CONFIRM|{action}|{ticker}|YES"
     no_data = f"CONFIRM|{action}|{ticker}|NO"
     keyboard = [
@@ -159,22 +144,20 @@ async def check_one_commodity(ticker: str, name: str, context: ContextTypes.DEFA
         print(f"No price data for {name} ({ticker})")
         return
 
-    # Test mode override
     if state.get("test_mode"):
-        threshold_pct = 0.01  # force 1% in test mode
+        threshold_pct = 0.01
     else:
         threshold_pct = adapt_threshold(vol)
 
     state["threshold_pct"] = threshold_pct
     state["last_price"] = current_price
     state["last_volatility"] = vol
-    state["last_updated"] = datetime.utcnow().isoformat()
+    state["last_updated"] = datetime.now(datetime.UTC).isoformat()
 
     last_buy = state["last_buy_price"]
     last_sell = state["last_sell_price"]
     pending_order = state["pending_order"]
 
-    # AUTO-INITIALIZE BASELINE IF NONE EXISTS
     if last_buy is None and last_sell is None:
         state["last_buy_price"] = current_price
         last_buy = current_price
@@ -187,18 +170,15 @@ async def check_one_commodity(ticker: str, name: str, context: ContextTypes.DEFA
         f"Threshold: {threshold_pct:.4f}, Vol: {vol}"
     )
 
-    # If an order is already pending, do not trigger another
     if pending_order is not None:
         save_state(ticker, state)
         return
 
-    # Reset ignore_sell_until_recovery once price recovers above last_buy
     if last_buy is not None and current_price > last_buy:
         if state.get("ignore_sell_until_recovery"):
             print(f"{name} ({ticker}) — price recovered above last BUY, re-enabling SELL signals.")
         state["ignore_sell_until_recovery"] = False
 
-    # Determine triggers based on last buy/sell
     buy_trigger = None
     sell_trigger = None
 
@@ -206,16 +186,13 @@ async def check_one_commodity(ticker: str, name: str, context: ContextTypes.DEFA
         buy_trigger = last_sell * (1 + threshold_pct)
         state["buy_trigger"] = buy_trigger
 
-    # Only compute SELL trigger if we are not ignoring the current drop
     if last_buy is not None and not state.get("ignore_sell_until_recovery", False):
         sell_trigger = last_buy * (1 - threshold_pct)
         state["sell_trigger"] = sell_trigger
     else:
-        # If ignoring, keep the stored sell_trigger but don't use it for signals
         if last_buy is not None and state.get("ignore_sell_until_recovery", False):
             print(f"{name} ({ticker}) — ignoring SELL signals until recovery.")
 
-    # BUY signal: price has risen X% above last sell
     if buy_trigger is not None and current_price >= buy_trigger:
         state["pending_order"] = "BUY"
         state["pending_price"] = current_price
@@ -231,7 +208,6 @@ async def check_one_commodity(ticker: str, name: str, context: ContextTypes.DEFA
         keyboard = build_confirmation_keyboard("BUY", ticker)
         await send_alert(msg, context, reply_markup=keyboard)
 
-    # SELL signal: price has fallen X% below last buy
     elif sell_trigger is not None and current_price <= sell_trigger:
         state["pending_order"] = "SELL"
         state["pending_price"] = current_price
@@ -392,7 +368,7 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = load_state(ticker)
     state["original_threshold"] = state.get("threshold_pct", BASE_THRESHOLD)
-    state["threshold_pct"] = 0.01  # 1% for test
+    state["threshold_pct"] = 0.01
     state["test_mode"] = True
     save_state(ticker, state)
 
@@ -408,7 +384,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
 
-    data = query.data  # "CONFIRM|BUY|SGLN.L|YES"
+    data = query.data
     try:
         prefix, action, ticker, answer = data.split("|")
     except ValueError:
@@ -450,24 +426,20 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"Recorded SELL price: £{pending_price:.2f}.\n"
                 f"Use /setholding or /updateholding if you changed your £ holding."
             )
-            # Once you actually SELL, we can safely re-enable future SELL signals
             state["ignore_sell_until_recovery"] = False
         else:
             msg = f"{name} ({ticker}) — mismatch between pending order and confirmation."
-    else:  # answer == "NO"
+    else:
         msg = (
             f"{name} ({ticker}) — you chose NO.\n"
             f"The signal is ignored; no BUY/SELL recorded."
         )
-        # If you say NO to a SELL, ignore further SELL signals until recovery
         if action == "SELL" and pending_order == "SELL":
             state["ignore_sell_until_recovery"] = True
 
-    # Clear pending state regardless of YES/NO
     state["pending_order"] = None
     state["pending_price"] = None
 
-    # Reset test mode if active
     if state.get("test_mode"):
         original = state.get("original_threshold", BASE_THRESHOLD)
         state["threshold_pct"] = original
@@ -493,7 +465,6 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("test", test_command))
     app.add_handler(CallbackQueryHandler(handle_confirmation, pattern=r"^CONFIRM\|"))
 
-    # Check all commodities every 5 minutes
     app.job_queue.run_repeating(check_all, interval=300, first=5)
 
     print("Upgraded bot started — polling Telegram…")
