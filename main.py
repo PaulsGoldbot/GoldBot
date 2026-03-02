@@ -1,7 +1,7 @@
 import os
 import json
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timezone
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -152,7 +152,7 @@ async def check_one_commodity(ticker: str, name: str, context: ContextTypes.DEFA
     state["threshold_pct"] = threshold_pct
     state["last_price"] = current_price
     state["last_volatility"] = vol
-    state["last_updated"] = datetime.now(datetime.UTC).isoformat()
+    state["last_updated"] = datetime.now(timezone.utc).isoformat()
 
     last_buy = state["last_buy_price"]
     last_sell = state["last_sell_price"]
