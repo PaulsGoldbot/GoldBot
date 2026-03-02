@@ -276,6 +276,55 @@ def parse_ticker_and_value(args):
     return ticker, value
 
 
+async def setholding(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /setholding <ticker> <amount>")
+        return
+
+    ticker = context.args[0].upper()
+    if ticker not in COMMODITIES:
+        await update.message.reply_text("Unknown ticker.")
+        return
+
+    try:
+        amount = float(context.args[1])
+    except:
+        await update.message.reply_text("Amount must be a number.")
+        return
+
+    s = load_state(ticker)
+    s["holding_value"] = amount
+    save_state(ticker, s)
+
+    await update.message.reply_text(f"Holding for {ticker} set to £{amount:.2f}.")
+
+
+async def updateholding(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /updateholding <ticker> <delta>")
+        return
+
+    ticker = context.args[0].upper()
+    if ticker not in COMMODITIES:
+        await update.message.reply_text("Unknown ticker.")
+        return
+
+    try:
+        delta = float(context.args[1])
+    except:
+        await update.message.reply_text("Delta must be a number.")
+        return
+
+    s = load_state(ticker)
+    s["holding_value"] = float(s.get("holding_value", 0.0)) + delta
+    save_state(ticker, s)
+
+    await update.message.reply_text(
+        f"Holding for {ticker} updated by £{delta:.2f}. "
+        f"New holding: £{s['holding_value']:.2f}."
+    )
+
+
 async def setbuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ticker, price = parse_ticker_and_value(context.args)
     if ticker not in COMMODITIES:
