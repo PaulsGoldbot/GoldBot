@@ -14,6 +14,10 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 
+# -----------------------------
+# CONFIG
+# -----------------------------
+
 BASE_THRESHOLD = 0.02
 VOL_LOW = 0.01
 VOL_HIGH = 0.03
@@ -32,6 +36,39 @@ COMMODITIES = {
 
 TEST_TICKER = "SGLN.L"
 
+
+# -----------------------------
+# PRICE NORMALISATION (PERMANENT FIX)
+# -----------------------------
+
+def normalize_price(p):
+    """
+    Permanent fix for yfinance scaling issues.
+    Ensures prices always return to the correct ETF scale.
+    """
+
+    if p is None:
+        return None
+
+    # Case 1: yfinance returns NAV × 100 or pence (e.g., 7776 instead of 77.76)
+    if p > 500:
+        return p / 100
+
+    # Case 2: yfinance returns NAV × 1000 (rare)
+    if p > 5000:
+        return p / 1000
+
+    # Case 3: yfinance returns £0.75 instead of £75
+    if p < 1:
+        return p * 100
+
+    # Case 4: already correct
+    return p
+
+
+# -----------------------------
+# STATE HANDLING
+# -----------------------------
 
 def state_file_for(ticker: str) -> str:
     return f"state_{ticker.replace('.', '_')}.json"
@@ -77,14 +114,27 @@ def save_state(ticker: str, state: dict) -> None:
         json.dump(state, f)
 
 
+# -----------------------------
+# PRICE + VOLATILITY FETCH
+# -----------------------------
+
 def get_volatility_and_price(ticker: str):
+    """
+    Fetches price + 10-day volatility and applies permanent scale normalisation.
+    """
+
     data = yf.Ticker(ticker)
     hist = data.history(period="11d")
+
     if hist.empty or len(hist["Close"]) < 2:
         price = float(hist["Close"].iloc[-1]) if not hist.empty else None
-        return price, None
+        return normalize_price(price), None
 
-    closes = hist["Close"]
+    closes = hist["Close"].astype(float)
+
+    # Normalise all historical prices
+    closes = closes.apply(normalize_price)
+
     returns = closes.pct_change().dropna()
     vol = float(returns.std()) if not returns.empty else None
     current_price = float(closes.iloc[-1])
@@ -95,6 +145,10 @@ def get_volatility_and_price(ticker: str):
     return current_price, vol
 
 
+# -----------------------------
+# THRESHOLD ADAPTATION
+# -----------------------------
+
 def adapt_threshold(volatility: float | None) -> float:
     if volatility is None:
         return BASE_THRESHOLD
@@ -103,6 +157,10 @@ def adapt_threshold(volatility: float | None) -> float:
     if volatility > VOL_HIGH:
         return BASE_THRESHOLD * 1.5
     return BASE_THRESHOLD
+# -----------------------------
+# ALERT + KEYBOARD HELPERS
+# -----------------------------
+
 async def send_alert(text: str, context: ContextTypes.DEFAULT_TYPE, reply_markup=None):
     chat_id = int(os.getenv("CHAT_ID"))
     await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
@@ -124,6 +182,10 @@ def build_resetall_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
+# -----------------------------
+# MAIN CHECK LOGIC
+# -----------------------------
+
 async def check_one_commodity(ticker: str, name: str, context: ContextTypes.DEFAULT_TYPE):
     state = load_state(ticker)
 
@@ -137,6 +199,7 @@ async def check_one_commodity(ticker: str, name: str, context: ContextTypes.DEFA
         print(f"No price data for {name} ({ticker})")
         return
 
+    # Apply test mode threshold or adaptive threshold
     threshold_pct = 0.01 if state.get("test_mode") else adapt_threshold(vol)
 
     state["threshold_pct"] = threshold_pct
@@ -148,29 +211,35 @@ async def check_one_commodity(ticker: str, name: str, context: ContextTypes.DEFA
     last_sell = state["last_sell_price"]
     pending_order = state["pending_order"]
 
+    # First-time baseline
     if last_buy is None and last_sell is None:
         state["last_buy_price"] = current_price
         last_buy = current_price
         print(f"Initialized baseline for {name} at £{current_price:.2f}")
 
+    # If waiting for user confirmation, do nothing
     if pending_order is not None:
         save_state(ticker, state)
         return
 
+    # Re-enable SELL signals after recovery
     if last_buy is not None and current_price > last_buy:
         if state.get("ignore_sell_until_recovery"):
             print(f"{name} ({ticker}) — price recovered above last BUY, re-enabling SELL signals.")
         state["ignore_sell_until_recovery"] = False
 
+    # BUY trigger (after a SELL)
     buy_trigger = last_sell * (1 + threshold_pct) if last_sell else None
-    sell_trigger = None
 
+    # SELL trigger (after a BUY)
+    sell_trigger = None
     if last_buy is not None and not state.get("ignore_sell_until_recovery", False):
         sell_trigger = last_buy * (1 - threshold_pct)
 
     state["buy_trigger"] = buy_trigger
     state["sell_trigger"] = sell_trigger
 
+    # BUY signal
     if buy_trigger is not None and current_price >= buy_trigger:
         state["pending_order"] = "BUY"
         state["pending_price"] = current_price
@@ -183,6 +252,7 @@ async def check_one_commodity(ticker: str, name: str, context: ContextTypes.DEFA
         )
         await send_alert(msg, context, reply_markup=build_confirmation_keyboard("BUY", ticker))
 
+    # SELL signal
     elif sell_trigger is not None and current_price <= sell_trigger:
         state["pending_order"] = "SELL"
         state["pending_price"] = current_price
@@ -205,6 +275,10 @@ async def check_all(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print(f"Error checking {name} ({ticker}): {e}")
 
+
+# -----------------------------
+# COMMANDS
+# -----------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [
@@ -376,12 +450,17 @@ async def resetall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# -----------------------------
+# CONFIRMATION HANDLER
+# -----------------------------
+
 async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     data = query.data
 
+    # RESETALL
     if data.startswith("RESETALL"):
         _, answer = data.split("|")
         if answer == "YES":
@@ -392,6 +471,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.edit_message_text("Reset cancelled.")
         return
 
+    # BUY/SELL confirmation
     try:
         prefix, action, ticker, answer = data.split("|")
     except ValueError:
@@ -429,6 +509,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     s["pending_order"] = None
     s["pending_price"] = None
 
+    # Reset test mode
     if s.get("test_mode"):
         original = s.get("original_threshold", BASE_THRESHOLD)
         s["threshold_pct"] = original
@@ -437,6 +518,10 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     save_state(ticker, s)
     await query.edit_message_text(msg)
+# -----------------------------
+# TEST MODE COMMAND
+# -----------------------------
+
 async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ticker = TEST_TICKER
     name = COMMODITIES[ticker]
@@ -455,6 +540,10 @@ async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# -----------------------------
+# MAIN APPLICATION SETUP
+# -----------------------------
+
 if __name__ == "__main__":
     BOT_TOKEN = os.getenv("BOT_TOKEN")
     if not BOT_TOKEN:
@@ -462,6 +551,7 @@ if __name__ == "__main__":
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("setbuy", setbuy))
@@ -471,9 +561,11 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("setholding", setholding))
     app.add_handler(CommandHandler("updateholding", updateholding))
     app.add_handler(CommandHandler("test", test_command))
+
+    # Button callbacks
     app.add_handler(CallbackQueryHandler(handle_confirmation))
 
-    # Check all commodities every 5 minutes
+    # Background price checks every 5 minutes
     app.job_queue.run_repeating(check_all, interval=300, first=5)
 
     print("Upgraded bot started — polling Telegram…")
