@@ -103,8 +103,6 @@ def adapt_threshold(volatility: float | None) -> float:
     if volatility > VOL_HIGH:
         return BASE_THRESHOLD * 1.5
     return BASE_THRESHOLD
-
-
 async def send_alert(text: str, context: ContextTypes.DEFAULT_TYPE, reply_markup=None):
     chat_id = int(os.getenv("CHAT_ID"))
     await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
@@ -384,7 +382,6 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     data = query.data
 
-    # RESETALL confirmation
     if data.startswith("RESETALL"):
         _, answer = data.split("|")
         if answer == "YES":
@@ -395,7 +392,6 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.edit_message_text("Reset cancelled.")
         return
 
-    # BUY/SELL confirmation
     try:
         prefix, action, ticker, answer = data.split("|")
     except ValueError:
@@ -441,6 +437,22 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     save_state(ticker, s)
     await query.edit_message_text(msg)
+async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ticker = TEST_TICKER
+    name = COMMODITIES[ticker]
+
+    state = load_state(ticker)
+    state["original_threshold"] = state.get("threshold_pct", BASE_THRESHOLD)
+    state["threshold_pct"] = 0.01
+    state["test_mode"] = True
+    save_state(ticker, state)
+
+    await update.message.reply_text(
+        f"TEST MODE ENABLED for {name} ({ticker}).\n"
+        f"Threshold forced to 1%.\n"
+        f"The bot will trigger a BUY/SELL cycle as soon as conditions are met.\n"
+        f"After confirmation, threshold will automatically reset."
+    )
 
 
 if __name__ == "__main__":
@@ -461,6 +473,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("test", test_command))
     app.add_handler(CallbackQueryHandler(handle_confirmation))
 
+    # Check all commodities every 5 minutes
     app.job_queue.run_repeating(check_all, interval=300, first=5)
 
     print("Upgraded bot started — polling Telegram…")
