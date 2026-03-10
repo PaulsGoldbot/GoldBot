@@ -282,6 +282,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Commands:",
         "/status – show current state",
         "/setpot <ticker> <pot> <amount>",
+        "/setpotbuy <ticker> <pot> <price>",
         "/reset <ticker>",
         "/resetall",
     ]
@@ -376,6 +377,62 @@ async def setpot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Pot {pot} for {ticker} set to amount £{amount:.2f} (marked as HOLDING)."
     )
 
+# -----------------------------
+# NEW COMMAND: /setpotbuy
+# -----------------------------
+
+async def setpotbuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Sets the initial BUY price for a pot.
+    Usage: /setpotbuy <ticker> <pot> <price>
+    """
+    if len(context.args) != 3:
+        await update.message.reply_text("Usage: /setpotbuy <ticker> <pot> <price>")
+        return
+
+    ticker = context.args[0].upper()
+    pot = context.args[1].upper()
+
+    if ticker not in COMMODITIES:
+        await update.message.reply_text("Unknown ticker.")
+        return
+    if pot not in POT_CONFIG:
+        await update.message.reply_text("Pot must be one of: A, B, C, D, E.")
+        return
+
+    try:
+        price = float(context.args[2])
+    except:
+        await update.message.reply_text("Price must be a number.")
+        return
+
+    s = load_state(ticker)
+    pots = s.get("pots", {})
+    p = pots.get(pot, {})
+
+    if p.get("last_buy_amount") is None:
+        await update.message.reply_text(
+            f"Pot {pot} for {ticker} has no amount set.\n"
+            f"Use /setpot {ticker} {pot} <amount> first."
+        )
+        return
+
+    p["last_buy_price"] = price
+    p["holding"] = True
+    pots[pot] = p
+    s["pots"] = pots
+    save_state(ticker, s)
+
+    await update.message.reply_text(
+        f"Pot {pot} for {ticker} initialised with BUY price £{price:.4f}.\n"
+        f"Amount: £{p['last_buy_amount']:.2f}\n"
+        f"SELL signals will now trigger."
+    )
+
+# -----------------------------
+# RESET COMMANDS
+# -----------------------------
+
 async def reset_one(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /reset <ticker>")
@@ -465,36 +522,3 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             msg = f"{name} — Pot {pot} action cancelled."
 
-        s["pending_order"] = None
-        s["pending_price"] = None
-        s["pending_pot"] = None
-
-        save_state(ticker, s)
-        await query.edit_message_text(msg)
-        return
-
-    await query.edit_message_text("Unknown action.")
-
-# -----------------------------
-# MAIN APPLICATION SETUP
-# -----------------------------
-
-if __name__ == "__main__":
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN not set.")
-
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("reset", reset_one))
-    app.add_handler(CommandHandler("resetall", resetall))
-    app.add_handler(CommandHandler("setpot", setpot))
-
-    app.add_handler(CallbackQueryHandler(handle_confirmation))
-
-    app.job_queue.run_repeating(check_all, interval=300, first=5)
-
-    print("Pots-only bot started — polling Telegram…")
-    app.run_polling()
