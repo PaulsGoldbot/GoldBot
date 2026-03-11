@@ -177,35 +177,39 @@ async def run_pot_engine(ticker: str, name: str, current_price: float, state: di
         last_sell_price = p.get("last_sell_price")
         holding = p.get("holding", False)
 
-        # SELL
+        # ---------------------------------
+        # SELL LOGIC
+        # ---------------------------------
         if holding and last_buy_price is not None:
             target_sell = last_buy_price * (1 + pct / 100.0)
+
             if current_price >= target_sell:
                 grown_amount = (
                     last_buy_amount * (1 + pct / 100.0)
                     if last_buy_amount is not None
                     else None
                 )
+
                 p["last_sell_price"] = current_price
                 p["last_grown_amount"] = grown_amount
                 p["holding"] = False
                 pots[pot_name] = p
 
-msg = [
-    f"{name} ({ticker}) — SELL signal triggered — Pot {pot_name} (+{pct:.1f}%).",
-]
+                # NEW SELL MESSAGE BLOCK (correct indentation)
+                msg = [
+                    f"{name} ({ticker}) — SELL signal triggered — Pot {pot_name} (+{pct:.1f}%).",
+                ]
 
-if last_buy_amount is not None:
-    msg.append(f"Original pot amount: £{last_buy_amount:.2f}")
+                if last_buy_amount is not None:
+                    msg.append(f"Original pot amount: £{last_buy_amount:.2f}")
 
-if grown_amount is not None:
-    msg.append(f"Grown pot amount: £{grown_amount:.2f}")
+                if grown_amount is not None:
+                    msg.append(f"Grown pot amount: £{grown_amount:.2f}")
 
-if grown_amount is not None:
-    msg.append(f"➡️ SELL £{grown_amount:.2f} of {name} at approximately £{current_price:.2f}")
+                if grown_amount is not None:
+                    msg.append(f"➡️ SELL £{grown_amount:.2f} of {name} at approximately £{current_price:.2f}")
 
-msg.append(f"Confirm SELL for {name} — Pot {pot_name}")
-
+                msg.append(f"Confirm SELL for {name} — Pot {pot_name}")
 
                 state["pending_order"] = "POT_SELL"
                 state["pending_price"] = current_price
@@ -218,23 +222,27 @@ msg.append(f"Confirm SELL for {name} — Pot {pot_name}")
                 )
                 break
 
-        # BUY
+        # ---------------------------------
+        # BUY LOGIC
+        # ---------------------------------
         if (not holding) and last_sell_price is not None and state.get("pending_order") is None:
             target_buy = last_sell_price * (1 - pct / 100.0)
+
             if current_price <= target_buy:
                 grown_amount = p.get("last_grown_amount")
-               msg = [
-    f"{name} ({ticker}) — BUY signal triggered — Pot {pot_name} (-{pct:.1f}%).",
-]
 
-if grown_amount is not None:
-    msg.append(f"Reinvest amount: £{grown_amount:.2f}")
+                # NEW BUY MESSAGE BLOCK (correct indentation)
+                msg = [
+                    f"{name} ({ticker}) — BUY signal triggered — Pot {pot_name} (-{pct:.1f}%).",
+                ]
 
-if grown_amount is not None:
-    msg.append(f"➡️ BUY £{grown_amount:.2f} of {name} at approximately £{current_price:.2f}")
+                if grown_amount is not None:
+                    msg.append(f"Reinvest amount: £{grown_amount:.2f}")
 
-msg.append(f"Confirm BUY for {name} — Pot {pot_name}")
+                if grown_amount is not None:
+                    msg.append(f"➡️ BUY £{grown_amount:.2f} of {name} at approximately £{current_price:.2f}")
 
+                msg.append(f"Confirm BUY for {name} — Pot {pot_name}")
 
                 state["pending_order"] = "POT_BUY"
                 state["pending_price"] = current_price
