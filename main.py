@@ -29,9 +29,7 @@ COMMODITIES = {
     "CMOD.L": "Commodities Basket",
 }
 
-TEST_TICKER = "SGLN.L"
-
-# UPDATED POTS: A–E (3/4/6/8/10%)
+# Pot ladder A–E
 POT_CONFIG = {
     "A": 3.0,
     "B": 4.0,
@@ -89,6 +87,7 @@ def load_state(ticker: str) -> dict:
     filename = state_file_for(ticker)
     if not os.path.exists(filename):
         return default_state()
+
     try:
         with open(filename, "r") as f:
             data = json.load(f)
@@ -98,19 +97,16 @@ def load_state(ticker: str) -> dict:
     base = default_state()
     base.update(data)
 
-    # Ensure pots exist for A–E
-    if "pots" not in base or not isinstance(base["pots"], dict):
-        base["pots"] = default_pots()
-    else:
-        for pot_name in POT_CONFIG.keys():
-            if pot_name not in base["pots"]:
-                base["pots"][pot_name] = {
-                    "last_buy_price": None,
-                    "last_buy_amount": None,
-                    "last_sell_price": None,
-                    "last_grown_amount": None,
-                    "holding": False,
-                }
+    # Ensure all pots exist (A–E)
+    for pot_name in POT_CONFIG.keys():
+        if pot_name not in base["pots"]:
+            base["pots"][pot_name] = {
+                "last_buy_price": None,
+                "last_buy_amount": None,
+                "last_sell_price": None,
+                "last_grown_amount": None,
+                "holding": False,
+            }
 
     return base
 
@@ -195,21 +191,21 @@ async def run_pot_engine(ticker: str, name: str, current_price: float, state: di
                 p["holding"] = False
                 pots[pot_name] = p
 
-                msg_lines = [
+                msg = [
                     f"{name} ({ticker}) — SELL signal — Pot {pot_name} (+{pct:.1f}%).",
                 ]
                 if last_buy_amount is not None:
-                    msg_lines.append(f"Last buy amount: £{last_buy_amount:.2f}")
+                    msg.append(f"Last buy amount: £{last_buy_amount:.2f}")
                 if grown_amount is not None:
-                    msg_lines.append(f"Estimated grown amount: £{grown_amount:.2f}")
-                msg_lines.append(f"Did you SELL {name} — Pot {pot_name}?")
+                    msg.append(f"Estimated grown amount: £{grown_amount:.2f}")
+                msg.append(f"Did you SELL {name} — Pot {pot_name}?")
 
                 state["pending_order"] = "POT_SELL"
                 state["pending_price"] = current_price
                 state["pending_pot"] = pot_name
 
                 await send_alert(
-                    "\n".join(msg_lines),
+                    "\n".join(msg),
                     context,
                     reply_markup=build_pot_confirmation_keyboard("SELL", ticker, pot_name),
                 )
@@ -220,19 +216,19 @@ async def run_pot_engine(ticker: str, name: str, current_price: float, state: di
             target_buy = last_sell_price * (1 - pct / 100.0)
             if current_price <= target_buy:
                 grown_amount = p.get("last_grown_amount")
-                msg_lines = [
+                msg = [
                     f"{name} ({ticker}) — BUY signal — Pot {pot_name} (-{pct:.1f}%).",
                 ]
                 if grown_amount is not None:
-                    msg_lines.append(f"Last grown amount: £{grown_amount:.2f}")
-                msg_lines.append(f"Did you BUY {name} — Pot {pot_name}?")
+                    msg.append(f"Last grown amount: £{grown_amount:.2f}")
+                msg.append(f"Did you BUY {name} — Pot {pot_name}?")
 
                 state["pending_order"] = "POT_BUY"
                 state["pending_price"] = current_price
                 state["pending_pot"] = pot_name
 
                 await send_alert(
-                    "\n".join(msg_lines),
+                    "\n".join(msg),
                     context,
                     reply_markup=build_pot_confirmation_keyboard("BUY", ticker, pot_name),
                 )
@@ -305,27 +301,22 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg.append(f"10-day volatility: {s['last_volatility']*100:.2f}%")
 
         if s["pending_order"]:
-            if s.get("pending_pot"):
-                msg.append(
-                    f"Pending: {s['pending_order']} (Pot {s['pending_pot']}) at £{s['pending_price']:.2f}"
-                )
-            else:
-                msg.append(f"Pending: {s['pending_order']} at £{s['pending_price']:.2f}")
+            msg.append(
+                f"Pending: {s['pending_order']} (Pot {s['pending_pot']}) at £{s['pending_price']:.2f}"
+            )
 
         pots = s.get("pots", {})
         for pot_name, pct in POT_CONFIG.items():
             p = pots.get(pot_name, {})
             line = [f"Pot {pot_name} ({pct:.1f}%):"]
+
+            holding = p.get("holding", False)
+            line.append("STATE: HOLDING" if holding else "STATE: SOLD")
+
             lbp = p.get("last_buy_price")
             lba = p.get("last_buy_amount")
             lsp = p.get("last_sell_price")
             lga = p.get("last_grown_amount")
-            holding = p.get("holding", False)
-
-            if holding:
-                line.append("STATE: HOLDING")
-            else:
-                line.append("STATE: SOLD")
 
             if lba is not None:
                 line.append(f"Amount: £{lba:.2f}")
@@ -339,7 +330,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg.append("  " + " | ".join(line))
 
         msg.append(f"Updated: {s['last_updated']} UTC")
-
         parts.append("\n".join(msg))
 
     await update.message.reply_text("\n\n".join(parts))
@@ -351,6 +341,7 @@ async def setpot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ticker = context.args[0].upper()
     pot = context.args[1].upper()
+
     if ticker not in COMMODITIES:
         await update.message.reply_text("Unknown ticker.")
         return
@@ -365,14 +356,12 @@ async def setpot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     s = load_state(ticker)
-    pots = s.get("pots", {})
-    p = pots.get(pot, {})
+    p = s["pots"][pot]
     p["last_buy_amount"] = amount
     p["holding"] = True
-    pots[pot] = p
-    s["pots"] = pots
-    save_state(ticker, s)
+    s["pots"][pot] = p
 
+    save_state(ticker, s)
     await update.message.reply_text(
         f"Pot {pot} for {ticker} set to amount £{amount:.2f} (marked as HOLDING)."
     )
@@ -382,10 +371,6 @@ async def setpot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # -----------------------------
 
 async def setpotbuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Sets the initial BUY price for a pot.
-    Usage: /setpotbuy <ticker> <pot> <price>
-    """
     if len(context.args) != 3:
         await update.message.reply_text("Usage: /setpotbuy <ticker> <pot> <price>")
         return
@@ -407,8 +392,7 @@ async def setpotbuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     s = load_state(ticker)
-    pots = s.get("pots", {})
-    p = pots.get(pot, {})
+    p = s["pots"][pot]
 
     if p.get("last_buy_amount") is None:
         await update.message.reply_text(
@@ -419,13 +403,11 @@ async def setpotbuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     p["last_buy_price"] = price
     p["holding"] = True
-    pots[pot] = p
-    s["pots"] = pots
-    save_state(ticker, s)
+    s["pots"][pot] = p
 
+    save_state(ticker, s)
     await update.message.reply_text(
         f"Pot {pot} for {ticker} initialised with BUY price £{price:.4f}.\n"
-        f"Amount: £{p['last_buy_amount']:.2f}\n"
         f"SELL signals will now trigger."
     )
 
@@ -475,11 +457,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # POT confirmations
     if data.startswith("POT"):
-        try:
-            prefix, action, ticker, pot, answer = data.split("|")
-        except ValueError:
-            await query.edit_message_text("Invalid pot confirmation.")
-            return
+        _, action, ticker, pot, answer = data.split("|")
 
         if ticker not in COMMODITIES or pot not in POT_CONFIG:
             await query.edit_message_text("Unknown ticker or pot.")
@@ -487,15 +465,13 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         s = load_state(ticker)
         name = COMMODITIES[ticker]
-        pots = s.get("pots", {})
-        p = pots.get(pot, {})
-        pending_order = s.get("pending_order")
-        pending_price = s.get("pending_price")
-        pending_pot = s.get("pending_pot")
+        p = s["pots"][pot]
 
-        if pending_order is None or pending_pot != pot:
+        if s["pending_order"] is None or s["pending_pot"] != pot:
             await query.edit_message_text("No pending pot order.")
             return
+
+        pending_price = s["pending_price"]
 
         if answer == "YES":
             if action == "BUY":
@@ -504,21 +480,48 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
                 if grown_amount is not None:
                     p["last_buy_amount"] = grown_amount
                 p["holding"] = True
-                pots[pot] = p
-                s["pots"] = pots
-                msg = f"{name} — Pot {pot} BUY confirmed at £{pending_price:.2f}.\n"
-                if grown_amount is not None:
-                    msg += f"Pot amount set to last grown amount: £{grown_amount:.2f}."
-                else:
-                    msg += "Pot amount recorded without grown amount."
+                msg = f"{name} — Pot {pot} BUY confirmed at £{pending_price:.2f}."
             elif action == "SELL":
                 p["last_sell_price"] = pending_price
                 p["holding"] = False
-                pots[pot] = p
-                s["pots"] = pots
                 msg = f"{name} — Pot {pot} SELL confirmed at £{pending_price:.2f}."
             else:
                 msg = "Mismatch."
         else:
             msg = f"{name} — Pot {pot} action cancelled."
 
+        s["pots"][pot] = p
+        s["pending_order"] = None
+        s["pending_price"] = None
+        s["pending_pot"] = None
+
+        save_state(ticker, s)
+        await query.edit_message_text(msg)
+        return
+
+    await query.edit_message_text("Unknown action.")
+
+# -----------------------------
+# MAIN APPLICATION SETUP
+# -----------------------------
+
+if __name__ == "__main__":
+    BOT_TOKEN = os.getenv("BOT_TOKEN")
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN not set.")
+
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("reset", reset_one))
+    app.add_handler(CommandHandler("resetall", resetall))
+    app.add_handler(CommandHandler("setpot", setpot))
+    app.add_handler(CommandHandler("setpotbuy", setpotbuy))
+
+    app.add_handler(CallbackQueryHandler(handle_confirmation))
+
+    app.job_queue.run_repeating(check_all, interval=300, first=5)
+
+    print("Pots-only bot (A–E) started — polling Telegram…")
+    app.run_polling()
