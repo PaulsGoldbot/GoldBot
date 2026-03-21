@@ -39,19 +39,18 @@ POT_CONFIG = {
 }
 
 # -----------------------------
-# PRICE NORMALISATION
+# PRICE NORMALISATION (SAFE)
 # -----------------------------
+# Logging-only version: NO SCALING APPLIED.
+# We return the raw price exactly as Yahoo Finance gives it.
 
-def normalize_price(p):
-    if p is None:
+def normalize_price(raw_price: float, ticker: str):
+    if raw_price is None:
         return None
-    if p > 5000:
-        return p / 1000
-    if p > 500:
-        return p / 100
-    if p < 1:
-        return p * 100
-    return p
+    try:
+        return float(raw_price)
+    except:
+        return None
 
 # -----------------------------
 # STATE HANDLING
@@ -97,7 +96,6 @@ def load_state(ticker: str) -> dict:
     base = default_state()
     base.update(data)
 
-    # Ensure all pots exist (A–E)
     for pot_name in POT_CONFIG.keys():
         if pot_name not in base["pots"]:
             base["pots"][pot_name] = {
@@ -116,23 +114,38 @@ def save_state(ticker: str, state: dict) -> None:
         json.dump(state, f)
 
 # -----------------------------
-# PRICE + VOLATILITY FETCH
+# PRICE + VOLATILITY FETCH (LOGGING ONLY)
 # -----------------------------
 
 def get_volatility_and_price(ticker: str):
     data = yf.Ticker(ticker)
     hist = data.history(period="11d")
 
+    # If no history or only one close
     if hist.empty or len(hist["Close"]) < 2:
-        price = float(hist["Close"].iloc[-1]) if not hist.empty else None
-        return normalize_price(price), None
+        raw_price = float(hist["Close"].iloc[-1]) if not hist.empty else None
+        print(f"[{ticker}] RAW latest close: {raw_price}")
+        price = normalize_price(raw_price, ticker)
+        print(f"[{ticker}] NORMALISED (raw passthrough): {price}")
+        return price, None
 
-    closes = hist["Close"].astype(float)
-    closes = closes.apply(normalize_price)
+    closes_raw = hist["Close"].astype(float)
+
+    # Log last 3 raw closes
+    try:
+        tail_raw = list(closes_raw.tail(3))
+        print(f"[{ticker}] RAW closes (last 3): {tail_raw}")
+    except Exception as e:
+        print(f"[{ticker}] Error logging raw closes: {e}")
+
+    # NO SCALING — raw passthrough
+    closes = closes_raw.apply(lambda p: normalize_price(p, ticker))
 
     returns = closes.pct_change().dropna()
     vol = float(returns.std()) if not returns.empty else None
     current_price = float(closes.iloc[-1])
+
+    print(f"[{ticker}] NORMALISED current price (raw passthrough): {current_price}, volatility: {vol}")
 
     return current_price, vol
 
@@ -159,7 +172,7 @@ def build_resetall_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 # -----------------------------
-# UNIFIED POT ENGINE (A–E)
+# UNIFIED POT ENGINE (UNCHANGED)
 # -----------------------------
 
 async def run_pot_engine(ticker: str, name: str, current_price: float, state: dict,
@@ -177,9 +190,7 @@ async def run_pot_engine(ticker: str, name: str, current_price: float, state: di
         last_sell_price = p.get("last_sell_price")
         holding = p.get("holding", False)
 
-        # ---------------------------------
         # SELL LOGIC
-        # ---------------------------------
         if holding and last_buy_price is not None:
             target_sell = last_buy_price * (1 + pct / 100.0)
 
@@ -195,7 +206,6 @@ async def run_pot_engine(ticker: str, name: str, current_price: float, state: di
                 p["holding"] = False
                 pots[pot_name] = p
 
-                # NEW SELL MESSAGE BLOCK (correct indentation)
                 msg = [
                     f"{name} ({ticker}) — SELL signal triggered — Pot {pot_name} (+{pct:.1f}%).",
                 ]
@@ -205,9 +215,7 @@ async def run_pot_engine(ticker: str, name: str, current_price: float, state: di
 
                 if grown_amount is not None:
                     msg.append(f"Grown pot amount: £{grown_amount:.2f}")
-
-                if grown_amount is not None:
-                    msg.append(f"➡️ SELL £{grown_amount:.2f} of {name} at approximately £{current_price:.2f}")
+                    msg.append(f"➡️ SELL £{grown_amount:.2f} at approx £{current_price:.2f}")
 
                 msg.append(f"Confirm SELL for {name} — Pot {pot_name}")
 
@@ -222,25 +230,20 @@ async def run_pot_engine(ticker: str, name: str, current_price: float, state: di
                 )
                 break
 
-        # ---------------------------------
         # BUY LOGIC
-        # ---------------------------------
         if (not holding) and last_sell_price is not None and state.get("pending_order") is None:
             target_buy = last_sell_price * (1 - pct / 100.0)
 
             if current_price <= target_buy:
                 grown_amount = p.get("last_grown_amount")
 
-                # NEW BUY MESSAGE BLOCK (correct indentation)
                 msg = [
                     f"{name} ({ticker}) — BUY signal triggered — Pot {pot_name} (-{pct:.1f}%).",
                 ]
 
                 if grown_amount is not None:
                     msg.append(f"Reinvest amount: £{grown_amount:.2f}")
-
-                if grown_amount is not None:
-                    msg.append(f"➡️ BUY £{grown_amount:.2f} of {name} at approximately £{current_price:.2f}")
+                    msg.append(f"➡️ BUY £{grown_amount:.2f} at approx £{current_price:.2f}")
 
                 msg.append(f"Confirm BUY for {name} — Pot {pot_name}")
 
@@ -295,7 +298,7 @@ async def check_all(context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [
-        "Bot is running (pots-only).",
+        "Bot is running (pots-only, logging-only mode).",
         "Commands:",
         "/status – show current state",
         "/setpot <ticker> <pot> <amount>",
@@ -387,10 +390,6 @@ async def setpot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Pot {pot} for {ticker} set to amount £{amount:.2f} (marked as HOLDING)."
     )
 
-# -----------------------------
-# NEW COMMAND: /setpotbuy
-# -----------------------------
-
 async def setpotbuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 3:
         await update.message.reply_text("Usage: /setpotbuy <ticker> <pot> <price>")
@@ -432,10 +431,6 @@ async def setpotbuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"SELL signals will now trigger."
     )
 
-# -----------------------------
-# RESET COMMANDS
-# -----------------------------
-
 async def reset_one(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /reset <ticker>")
@@ -455,17 +450,12 @@ async def resetall(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=build_resetall_keyboard()
     )
 
-# -----------------------------
-# CONFIRMATION HANDLER
-# -----------------------------
-
 async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     data = query.data
 
-    # RESETALL
     if data.startswith("RESETALL"):
         _, answer = data.split("|")
         if answer == "YES":
@@ -476,7 +466,6 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
             await query.edit_message_text("Reset cancelled.")
         return
 
-    # POT confirmations
     if data.startswith("POT"):
         _, action, ticker, pot, answer = data.split("|")
 
@@ -544,5 +533,3 @@ if __name__ == "__main__":
 
     app.job_queue.run_repeating(check_all, interval=300, first=5)
 
-    print("Pots-only bot (A–E) started — polling Telegram…")
-    app.run_polling()
