@@ -19,6 +19,7 @@ from telegram.ext import (
 # -----------------------------
 
 COMMODITIES = {
+    # Original 8
     "SGLN.L": "Gold",
     "SSLN.L": "Silver",
     "BRNT.L": "Oil",
@@ -27,6 +28,48 @@ COMMODITIES = {
     "PHPT.L": "Platinum",
     "PHPD.L": "Palladium",
     "CMOD.L": "Commodities Basket",
+
+    # Equity / index / global ETFs (Trading212 Invest, .L tickers)
+    "EQQQ.L": "Nasdaq 100",
+    "CNDX.L": "Nasdaq 100 (iShares)",
+    "VUSA.L": "S&P 500 (Vanguard)",
+    "IUSA.L": "S&P 500 (iShares)",
+    "CSP1.L": "S&P 500 (iShares Core)",
+    "VWRL.L": "FTSE All-World",
+    "IWDA.L": "MSCI World",
+    "XDWD.L": "MSCI World (Xtrackers)",
+    "VEVE.L": "Developed World",
+    "VFEM.L": "Emerging Markets (Vanguard)",
+    "EMIM.L": "Emerging Markets (iShares)",
+    "EIMI.L": "Emerging IMI (iShares)",
+    "ISF.L": "FTSE 100 (iShares)",
+    "VUKE.L": "FTSE 100 (Vanguard)",
+    "WSML.L": "World Small Cap",
+    "HMWO.L": "MSCI World (HSBC)",
+
+    # Thematic / sector / factor
+    "SPGP.L": "S&P 500 Growth",
+    "SPDV.L": "US Dividend",
+    "XD9U.L": "Global Dividend",
+    "INRG.L": "Clean Energy",
+    "IUIT.L": "US Tech",
+    "IUKP.L": "UK Property",
+    "IAPD.L": "Asia Pacific Dividend",
+
+    # Bonds / defensive
+    "LQDE.L": "Corporate Bond (iShares)",
+    "IGLT.L": "UK Gilts (iShares)",
+
+    # Extra commodities / metals / miners
+    "BCOG.L": "All Commodities (L&G)",
+    "SGLP.L": "Physical Gold",
+    "PHAG.L": "Physical Silver",
+    "GDX.L": "Gold Miners",
+    "GDXJ.L": "Junior Gold Miners",
+    "PHAU.L": "Physical Gold (ETFS)",
+
+    # Extra global / EM coverage
+    "XDEM.L": "EM Equity (Xtrackers)",
 }
 
 # Pot ladder A–E
@@ -39,18 +82,31 @@ POT_CONFIG = {
 }
 
 # -----------------------------
-# PRICE NORMALISATION (SAFE)
+# PRICE NORMALISATION
 # -----------------------------
-# Logging-only version: NO SCALING APPLIED.
-# We return the raw price exactly as Yahoo Finance gives it.
+# Heuristic scaling for UK ETFs:
+# - Many UK-listed ETFs/ETCs report in pence on some feeds.
+# - We apply a simple heuristic:
+#   * If raw_price > 2000 → assume pence, divide by 100.
+#   * Else if raw_price > 200 → likely 10x, divide by 10.
+#   * Else → use as-is.
+# This keeps behaviour stable and avoids 10x/100x mis-scaling.
 
 def normalize_price(raw_price: float, ticker: str):
     if raw_price is None:
         return None
     try:
-        return float(raw_price)
-    except:
+        p = float(raw_price)
+    except Exception:
         return None
+
+    # Heuristic scaling
+    if p > 2000:
+        p = p / 100.0
+    elif p > 200:
+        p = p / 10.0
+
+    return p
 
 # -----------------------------
 # STATE HANDLING
@@ -114,38 +170,35 @@ def save_state(ticker: str, state: dict) -> None:
         json.dump(state, f)
 
 # -----------------------------
-# PRICE + VOLATILITY FETCH (LOGGING ONLY)
+# PRICE + VOLATILITY FETCH
 # -----------------------------
 
 def get_volatility_and_price(ticker: str):
     data = yf.Ticker(ticker)
     hist = data.history(period="11d")
 
-    # If no history or only one close
     if hist.empty or len(hist["Close"]) < 2:
         raw_price = float(hist["Close"].iloc[-1]) if not hist.empty else None
         print(f"[{ticker}] RAW latest close: {raw_price}")
         price = normalize_price(raw_price, ticker)
-        print(f"[{ticker}] NORMALISED (raw passthrough): {price}")
+        print(f"[{ticker}] NORMALISED price: {price}")
         return price, None
 
     closes_raw = hist["Close"].astype(float)
 
-    # Log last 3 raw closes
     try:
         tail_raw = list(closes_raw.tail(3))
         print(f"[{ticker}] RAW closes (last 3): {tail_raw}")
     except Exception as e:
         print(f"[{ticker}] Error logging raw closes: {e}")
 
-    # NO SCALING — raw passthrough
     closes = closes_raw.apply(lambda p: normalize_price(p, ticker))
 
     returns = closes.pct_change().dropna()
     vol = float(returns.std()) if not returns.empty else None
     current_price = float(closes.iloc[-1])
 
-    print(f"[{ticker}] NORMALISED current price (raw passthrough): {current_price}, volatility: {vol}")
+    print(f"[{ticker}] NORMALISED current price: {current_price}, volatility: {vol}")
 
     return current_price, vol
 
@@ -172,7 +225,7 @@ def build_resetall_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 # -----------------------------
-# UNIFIED POT ENGINE (UNCHANGED)
+# UNIFIED POT ENGINE
 # -----------------------------
 
 async def run_pot_engine(ticker: str, name: str, current_price: float, state: dict,
@@ -298,7 +351,7 @@ async def check_all(context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [
-        "Bot is running (pots-only, logging-only mode).",
+        "Bot is running (pots engine, multi-asset mode).",
         "Commands:",
         "/status – show current state",
         "/setpot <ticker> <pot> <amount>",
@@ -375,7 +428,7 @@ async def setpot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         amount = float(context.args[2])
-    except:
+    except Exception:
         await update.message.reply_text("Amount must be a number.")
         return
 
@@ -407,7 +460,7 @@ async def setpotbuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         price = float(context.args[2])
-    except:
+    except Exception:
         await update.message.reply_text("Price must be a number.")
         return
 
@@ -446,7 +499,7 @@ async def reset_one(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def resetall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Are you sure you want to wipe ALL commodities?",
+        "Are you sure you want to wipe ALL assets?",
         reply_markup=build_resetall_keyboard()
     )
 
@@ -461,7 +514,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         if answer == "YES":
             for ticker in COMMODITIES:
                 save_state(ticker, default_state())
-            await query.edit_message_text("All commodities reset.")
+            await query.edit_message_text("All assets reset.")
         else:
             await query.edit_message_text("Reset cancelled.")
         return
@@ -531,5 +584,7 @@ if __name__ == "__main__":
 
     app.add_handler(CallbackQueryHandler(handle_confirmation))
 
+    # Check all assets every 5 minutes
     app.job_queue.run_repeating(check_all, interval=300, first=5)
 
+    app.run_polling()
